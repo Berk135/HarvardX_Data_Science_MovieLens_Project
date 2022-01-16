@@ -1,0 +1,11 @@
+install.packages('tinytex')
+tinytex::install_tinytex(force = TRUE)
+tinytex::uninstall_tinytex(force = TRUE)
+tinytex::pdflatex('MovieLens_Project.tex')
+#tlmgr update --self --all
+#tlmgr path add
+fmtutil-sys --all
+
+install.packages('knitr', dependencies = TRUE)
+library(knitr)
+file.access('/usr/local/bin', 2)

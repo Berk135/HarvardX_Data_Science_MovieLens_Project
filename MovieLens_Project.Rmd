@@ -1,0 +1,979 @@
+---
+title: "MovieLens Project"
+author: "Berkalp Altay"
+date: "January 12, 2022"
+output: 
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    highlight: tango
+    keep_tex: true
+---
+
+```{r Setup, include=FALSE}
+#Specifying the knitr global options for chunks of code
+knitr::opts_chunk$set(echo = FALSE, 
+                      eval=TRUE,
+                      cache=FALSE, 
+                      cache.lazy = FALSE,
+                      message=FALSE,
+                      warning=FALSE,
+                      fig.align="center",
+                      out.width = "75%",
+                      out.height = "50%",
+                      purl=TRUE
+                      )
+```
+
+
+```{r Installing required packages}
+#removing cache/__packages
+if (file.exists("cache/__packages")) unlink("cache/__packages")
+#Installing required packages if there are not already installed
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(kableExtra)) install.packages("kableExtra", repos = "http://cran.us.r-project.org")
+if(!require(ggplot2)) install.packages("ggplot2", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+``` 
+
+```{r Loading packages}
+#Loading required packages
+library(tidyverse)
+library(caret)
+library(data.table)
+library(lubridate)
+library(kableExtra)
+library(ggplot2)
+library(ggthemes)
+``` 
+
+```{r Creating edx and validation set}
+##########################################################
+# Create edx set, validation set (final hold-out test set)
+##########################################################
+
+# Note: this process could take a couple of minutes
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(caret)
+library(data.table)
+
+# MovieLens 10M dataset:
+# https://grouplens.org/datasets/movielens/10m/
+# http://files.grouplens.org/datasets/movielens/ml-10m.zip
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+#omitting the following part since I'm using R 4.0 or later
+#please use the following part if you are using R 3.6 or earlier
+# if using R 3.6 or earlier:
+#movies <- as.data.frame(movies) %>% mutate(movieId = #as.numeric(levels(movieId))[movieId],
+#                                            title = as.character(title),
+#                                            genres = as.character(genres))
+
+#If you are using R 3.6 or earlier:
+# - please omit the following part
+# - instead, use the code above that has been commented out if
+# if using R 4.0 or later:
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                            title = as.character(title),
+                                            genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+set.seed(1, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(1)`
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+validation <- temp %>% 
+      semi_join(edx, by = "movieId") %>%
+      semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+
+```
+\newpage
+## 1. Introduction
+This project aims to build a recommendation system using the MovieLens 10M dataset.
+
+### 1.1. Dataset
+
+In this MovieLens dataset, there are about 10 Million movie ratings with 6 different categories associated with each rating.
+```{r Gathering Info About Data}
+#Finding column names in the data
+edx_columns <- colnames(edx)
+#Finding total number of movie ratings (i.e. rows) in MovieLens Dataset
+n_ratings <- nrow(edx) + nrow(validation)
+#Finding number of unique users
+n_users <- length(unique(edx$userId))
+#Finding number of unique movies
+n_movies <- length(unique(edx$movieId))
+```
+
+These 6 categories are the following:
+
+  * Title of the movie
+
+  * Movie ID
+
+  * Genre of the movie
+
+  * User ID
+
+  * Rating (from 0.5 to 5 in increments of 0.5 with 5 being the best rating possible) 
+
+  * Timestamp for the date and time of the rating
+
+There are approximately 70000 unique users and 10000 unique movies.\
+The genres include Comedy, Adventure, Drama, and so on.\
+Also, the release date of a movie is included in parentheses at the end of a title.
+
+### 1.2. Evaluation Criteria
+In the next sections, the data will be explored and recommendation systems will be built using the data. The recommendation system will be evaluated using the Root Mean Squared Error (RMSE).\
+
+The RMSE formula is as follows:
+
+$$\mbox{RMSE} = \sqrt{\frac{1}{n}\sum_{t=1}^{n}\hat{y}_i^2-y_i^2}$$\
+In this formula, $\hat{y}_i$ represents the predicted ratings based on the recommendation system while $y_i$ represents the actual ratings from the dataset.\
+The lower the RMSE, the better the model is. For this project, an RMSE lower than 0.86490 is the ultimate target. This ultimate RMSE evaluation will be based on a validation set that will be used only for model evaluation at the end in Section ```3. Results```.\
+Using the validation set, the Regularized Movie & User & Release Year & Timestamp Model, the final model in this project, reaches an RMSE of __0.8648589__. This meets the ultimate target.
+
+## 2. Analysis
+
+### 2.1. Data Exploration
+The 10 million movie ratings are initially divided into two datasets: _edx_ and _validation_ with the _edx_ dataset containing approximately 90% of the data while the _validation_ dataset contains the remaining 10%.\
+The rows of both the _edx_ and _validation_ datasets are entries for different ratings.\
+Also, both the _edx_ and _validation_ datasets have 6 columns.\
+
+```{r Table 1: Columns names with explanation}
+#Write column names & explanations
+columns <- c("userId", "movieId", "title", "genres", "rating", "timestamp")
+column_explanations <- c("Unique identifier for each user",
+                  "Unique identifier for each movie",
+                  "Title of a movie",
+                  "Genre of a movie - multiple genres are concatenated with a | sign such as Comedy|Romance",
+                  "Rating given by a specific user to a specific movie",
+                  "Date and time associated with each rating")
+
+#Show columns & their explanations in a table
+data.frame(columns, column_explanations) %>%
+  kable(caption = "Columns", align = "cl") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = "HOLD_position",
+                position = "center")
+
+#Remove stored data & values
+rm(columns, column_explanations)
+```
+
+The _validation_ set will be used in Section ```3. Results``` as a final hold-out test set for only reporting the RMSE of the final model. Therefore, a training set and a test set seem necessary while building and testing models.\ 
+To that end, the _edx_ set has been divided into _edxTrain_ and _edxTest_ sets. The _edxTest_ set has been created as the same size as that of the _validation_ set. So, both the _edxTest_ and _validation_ sets have approximately 1 million movie ratings (i.e. both have 10% of the original MovieLens 10M dataset) while the _edxTrain_ set has approximately 8 million movie ratings.
+```{r Creating edxTrain and edxTest sets}
+##########################################################
+# Create edxTrain and edxTest sets from the edx set
+##########################################################
+
+# edxTest set will be 10% of MovieLens data like Validation set
+set.seed(3, sample.kind="Rounding") # if using R 3.5 or earlier, use `set.seed(3)`
+#p = 1/9 is chosen to make edxTest set similar in size to Validation set
+edxTest_index <- createDataPartition(y = edx$rating, times = 1, p = 1/9, list = FALSE)
+edxTrain <- edx[-edxTest_index,]
+temp_test <- edx[edxTest_index,]
+
+# Make sure userId and movieId in edxTest set are also in edxTrain set
+edxTest <- temp_test %>% 
+      semi_join(edxTrain, by = "movieId") %>%
+      semi_join(edxTrain, by = "userId") 
+
+# Add rows removed from edxTest set back into edxTrain set
+removed <- anti_join(temp_test, edxTest)
+edxTrain <- rbind(edxTrain, removed)
+
+rm(edxTest_index, temp_test, removed)
+```
+### 2.2. Data Preparation and Data Visualization
+
+#### 2.2.1. Data Preparation Phase
+\
+\
+After the data exploration phase, we see that the title column contains the release year for each movie. For example, the title for Pulp Fiction is listed as ```Pulp Fiction (1994)```.\
+Also, the timestamp is not in a human-readable format.
+\
+First, the release year for each movie will be extracted from the title column and added to _edxTrain_ and _edxTest_ sets as a column.\
+Second, the timestamp column will be converted to a human-readable form and the year will be extracted. This will provide the year in which the rating was given.
+```{r Creating release and rating year columns}
+#Create a column in edxTrain and edxTest sets for year of releases for movies
+edxTrain$release_year <- as.numeric(str_sub(edxTrain$title, start = -5, end = -2))
+edxTest$release_year <- as.numeric(str_sub(edxTest$title, start = -5, end = -2))
+
+#Create a column in edxTrain and edxTest sets for year of ratings
+edxTrain$rating_year <- year(as_datetime(edxTrain$timestamp))
+edxTest$rating_year <- year(as_datetime(edxTest$timestamp))
+```
+Third, the RMSE formula for the evaluation purposes will be defined as per the definition given in Section ```1.2. Evaluation Criteria```.
+```{r RMSE function}
+#Define the RMSE function
+rmse <- function(actual_ratings, predicted_ratings){
+  sqrt(mean((actual_ratings - predicted_ratings)^2, na.rm=TRUE))
+}
+
+```
+
+After these changes, we can see some rows of the _edxTrain_ and _edxTest_ sets below.
+
+```{r Table 2: first 3 rows of edxTrain set}
+#Put the first 3 rows of edxTrain set in a table
+edxTrain %>% head(3) %>%
+   kable(caption = "First 3 rows of edxTrain set", align="c") %>%
+   column_spec(column = 1: ncol(edxTrain), border_left = TRUE, border_right = TRUE) %>%
+   kable_styling(full_width=FALSE,
+                 font_size = 6.7,
+                 latex_options = c("HOLD_position","striped"),
+                 position = "center")
+```
+
+```{r Table 3: first 3 rows of edxTest set}
+#Put the first 3 rows of edxTest set in a table
+edxTest %>% head(3) %>%
+   kable(caption = "First 3 rows of edxTest set", align="c") %>%
+   column_spec(column = 1: ncol(edxTest), border_left = TRUE, border_right = TRUE) %>%
+   kable_styling(full_width=FALSE,
+                 font_size = 8,
+                 latex_options = c("HOLD_position","striped"),
+                 position = "center")
+```
+
+#### 2.2.2. Data Visualization
+
+##### 2.2.2.1. Average Rating
+\
+First, we notice that every movie has a different average rating. Below, we can see this looking at Figure 1 created using the _edx_ set.
+
+```{r Figure 1 - Average Rating by Movie ID}
+#Plot Average Rating given to each Movie
+fig1 <- edx %>% 
+  group_by(movieId) %>%
+  summarize(avg_rating = mean(rating)) %>%
+  select(movieId, avg_rating) %>%
+  ggplot(aes(x=as.factor(movieId), y=avg_rating)) +
+  geom_bar(stat = "identity")+
+  labs(title = "Figure 1: Average Rating by Movie ID\n", x = "\nMovie ID", y = "Average Rating\n")+
+  scale_x_discrete(breaks=NULL,
+                   labels=NULL) +
+  theme_economist()
+
+fig1
+
+```
+
+Second, we notice that every user has a different average rating. Below, we can see this looking at Figure 2 created using the _edx_ set.
+
+```{r Figure 2 - Average Rating by User ID}
+#Plot Average Rating given by each User
+fig2 <- edx %>% 
+  group_by(userId) %>%
+  summarize(avg_rating = mean(rating)) %>%
+  select(userId, avg_rating) %>%
+  ggplot(aes(x=as.factor(userId), y=avg_rating)) +
+  geom_bar(stat = "identity")+
+  labs(title = "Figure 2: Average Rating by User ID\n", x = "\nUser ID", y = "Average Rating\n")+
+  scale_x_discrete(breaks=NULL,
+                   labels=NULL) +
+  theme_economist()
+
+fig2
+
+```
+
+Third, we notice that the movies released between around 1930 and 1985 seem to have higher ratings than the ones released after 1985. Below, we can see this looking at Figure 3 created using the _edx_ set.
+
+```{r Figure 3 - Average Rating by Year of Release}
+#Plot Average Rating for Year of Release of Each Movie
+fig3 <- edx %>% 
+  mutate(release_year = as.numeric(str_sub(edx$title, start = -5, end = -2))) %>% 
+  group_by(release_year) %>%
+  summarize(avg_rating = mean(rating)) %>%
+  select(release_year, avg_rating) %>%
+  ggplot(aes(x=release_year, y=avg_rating)) +
+  geom_line(color="#FA8072")+
+  geom_vline(xintercept = 1985)+
+  geom_text(aes(1980, 3.93, label = "Year of\n1985"), data.frame())+
+  labs(title = "Figure 3: Average Rating by Year of Release\n", x = "\nYears", y = "Average Rating\n")+
+  theme_economist()
+
+fig3
+```
+
+Fourth, we notice that the movies rated before 2000 seem to have higher ratings than the ones released after 2000. Below, we can see this looking at Figure 4 created using the _edx_ set.
+
+```{r Figure 4 - Average Rating by Year of Rating}
+#Plot Average Rating for Year of Each Rating in Dataset
+fig4 <- edx %>% 
+  mutate(rating_year = year(as_datetime(edx$timestamp))) %>% 
+  group_by(rating_year) %>%
+  summarize(avg_rating = mean(rating)) %>%
+  select(rating_year, avg_rating) %>%
+  ggplot(aes(x=rating_year, y=avg_rating)) +
+  geom_line(color="#FA8072")+
+  geom_vline(xintercept = 2000)+
+  geom_text(aes(1999.1, 3.88, label = "Year of\n2000"), data.frame())+
+  labs(title = "Figure 4: Average Rating by Year of Rating\n", x = "\nYears", y = "Average Rating\n")+
+  theme_economist()
+
+fig4
+
+```
+
+As seen in the Figures above, there is significant variability in ratings by movie ID, user ID, year of release, and year of rating.
+
+##### 2.2.2.2. Frequency
+\
+\
+First, not all movies are rated as frequently as others. In Tables 4 and 5 below, you can see top 5 and bottom 5 movies in the _edx_ set by the frequency of ratings, respectively. For example, in the _edx_ set, ```Pulp Fiction``` was rated 31362 times while ```100 Feet``` was rated only once.
+
+```{r Table 4: Top 5 Movies by Rating Frequency}
+#Show Top 5 Movies by Rating Frequency in a table
+edx %>% 
+  group_by(title) %>% 
+  summarize(count = n()) %>%
+  select(title, count) %>%
+  arrange(desc(count)) %>%
+  head(5) %>%
+  kable(caption = "Top 5 Movies by Rating Frequency", align="c") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = c("HOLD_position","striped"),
+                position = "center")
+
+```
+
+```{r Table 5: Bottom 5 Movies by Rating Frequency}
+#Show Bottom 5 Movies by Rating Frequency in a table
+edx %>% 
+  group_by(title) %>% 
+  summarize(count = n()) %>%
+  select(title, count) %>%
+  arrange(desc(-count)) %>%
+  head(5) %>%
+  kable(caption = "Bottom 5 Movies by Rating Frequency", align="c") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = c("HOLD_position","striped"),
+                position = "center")
+```
+
+Second, not all users rate as frequently as others. In Tables 6 and 7 below, you can see top 5 and bottom 5 user IDs in the _edx_ set by the number of times they have rated, respectively. For example, in the _edx_ set, the user with an ID number of 59269 rated 6616 times while the user with an ID number of 62516 rated only 10 times.
+
+```{r Table 6: Top 5 Users by Rating Frequency}
+#Show Top 5 Users by Rating Frequency in a table
+edx %>% 
+  group_by(userId) %>% 
+  summarize(count = n()) %>%
+  select(userId, count) %>%
+  arrange(desc(count)) %>%
+  head(5) %>%
+  kable(caption = "Top 5 Users by Rating Frequency", align="c") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = c("HOLD_position","striped"),
+                position = "center")
+```
+
+```{r Table 7: Bottom 5 Users by Rating Frequency}
+#Show Bottom 5 Users by Rating Frequency in a table
+edx %>% 
+  group_by(userId) %>% 
+  summarize(count = n()) %>%
+  select(userId, count) %>%
+  arrange(desc(-count)) %>%
+  head(5) %>%
+  kable(caption = "Bottom 5 Users by Rating Frequency", align="c") %>%
+  column_spec(column = 1:2, border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 11,
+                latex_options = c("HOLD_position","striped"),
+                position = "center")
+
+```
+
+### 2.3. Modeling Approach
+In this section, various models will be built. In all these models, _edxTest_ set will be used with the RMSE function for evaluation of the model since the evaluation of the final model using the _validation_ set will be conducted in the ```3. Results``` Section. 
+
+```{r Results for edxTest & validation}
+#Create Results table for the edxTest set to store RMSE of each model
+results_edxTest <- data.frame(matrix(ncol = 2, nrow=0))
+#Give column names
+colnames(results_edxTest) <- c("Model", "RMSE")
+#Change type of column Model to character
+results_edxTest$Model <- as.character(results_edxTest$Model)
+#Change type of column RMSE to double
+results_edxTest$RMSE <- as.double(results_edxTest$RMSE)
+
+#Create Results table for the validation set to store RMSE of each model
+results_validation <- data.frame(matrix(ncol = 2, nrow=0))
+#Give column names
+colnames(results_validation) <- c("Model", "RMSE")
+#Change type of column Model to character
+results_validation$Model <- as.character(results_validation$Model)
+#Change type of column RMSE to double
+results_validation$RMSE <- as.double(results_validation$RMSE)
+
+```
+
+#### 2.3.1. Baseline Mean Model
+\
+\
+In this model, we assume that every movie has the same rating and that same rating is the average (i.e. mean) rating of all movies.\
+\
+The formula for the Baseline Mean Model:\
+$$Y = \mu+ \epsilon$$\
+where $\mu$ stands for the average rating for all movies and $\epsilon$ stands for independent errors sampled from the same distribution centered at zero.
+```{r Baseline Mean Model}
+#Find overall average rating
+avg_rating <- mean(edxTrain$rating)
+
+#Remove average rating to free up space
+rm(avg_rating)
+```
+
+Therefore, this model assigns a rating of about __3.512417__ to every movie.
+```{r Baseline Mean Model RMSE}
+#This model uses Average Rating as the predicted rating for each Movie
+#Find overall average rating
+avg_rating <- mean(edxTrain$rating)
+#Find RMSE for Baseline Mean Model using edxTest set
+baseline_rmse <- RMSE(avg_rating, edxTest$rating)
+
+#Store RMSE for edxTest set in edxTest Results table
+results_edxTest <- bind_rows(results_edxTest, 
+                              data.frame(
+                                Model = "Baseline Mean Model",
+                                RMSE = baseline_rmse)
+                              )
+#Remove duplicates from edxTest Results table in case code is run more than once
+results_edxTest <- results_edxTest[!duplicated(results_edxTest[, c("Model","RMSE")]),]
+
+#Find RMSE for Baseline Mean Model using Validation set
+val_baseline_rmse <- RMSE(avg_rating, validation$rating)
+#Store RMSE for Validation set in Validation Results table
+results_validation <- bind_rows(results_validation , 
+                              data.frame(
+                                Model = "Baseline Mean Model",
+                                RMSE = val_baseline_rmse)
+                              )
+#Remove duplicates from Validation Results table in case code is run more than once
+results_validation <- results_validation[!duplicated(results_validation[, c("Model","RMSE")]),]
+
+#Remove stored data or values to free up space
+rm(avg_rating, baseline_rmse, val_baseline_rmse)
+```
+The RMSE for the Baseline Mean model using the _edxTest_ set is around __1.059487__. We can interpret this result as missing the actual rating stars by around 1.06 stars. This is far from perfect and also misses the ultimate target of __0.86490__.
+
+#### 2.3.2. Movie Model
+\
+\
+In this model, we start taking movies into account. In particular, we know and use the fact that not all movies are rated the same, as seen in Figure 1 in Section ```2.2.```. Therefore, we account for the variability of ratings due to movies themselves.\
+\
+The formula for the Movie Model:\
+$$Y_{m} = \mu+b_{m}+ \epsilon$$\
+where $\mu$ stands for the average rating for all movies and $b_m$ stands for the average rating for movie $m$, also called the movie effect while $\epsilon$ stands for independent errors sampled from the same distribution centered at zero.
+```{r Movie Model}
+#This model considers impact of movies on ratings
+#Find overall average rating
+avg_rating <- mean(edxTrain$rating)
+
+#Find the Average Effect (or bias) movies have on Ratings
+movie_effects <- edxTrain %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - avg_rating))
+
+#Predict ratings for Movie Model using edxTest set
+movie_model_ratings <- edxTest %>% 
+  left_join(movie_effects, by = "movieId") %>%
+  mutate(pred_rating = avg_rating + b_m) %>%
+  .$pred_rating
+
+#Find RMSE for Movie Model using edxTest set
+rmse_movie_model <- rmse(movie_model_ratings, edxTest$rating)
+#Store RMSE for edxTest set in edxTest Results table
+results_edxTest <- bind_rows(results_edxTest, 
+                              data.frame(
+                                Model = "Movie Model",
+                                RMSE = rmse_movie_model)
+                              )
+#Remove duplicates from edxTest Results table in case code is run more than once
+results_edxTest <- results_edxTest[!duplicated(results_edxTest[, c("Model","RMSE")]),]
+
+#Predict ratings for Movie Model using Validation set
+val_movie_model_ratings <- validation %>% 
+  left_join(movie_effects, by = "movieId") %>%
+  mutate(pred_rating = avg_rating + b_m) %>%
+  .$pred_rating
+
+#Find RMSE for Movie Model using edxTest set
+val_rmse_movie_model <- rmse(val_movie_model_ratings, validation$rating)
+
+#Store RMSE for Validation set in Validation Results table
+results_validation <- bind_rows(results_validation , 
+                              data.frame(
+                                Model = "Movie Model",
+                                RMSE = val_rmse_movie_model)
+                              )
+#Remove duplicates from Validation Results table in case code is run more than once
+results_validation <- results_validation[!duplicated(results_validation[, c("Model","RMSE")]),]
+
+#Remove stored data or values to free up space
+rm(avg_rating, movie_effects, movie_model_ratings, rmse_movie_model, val_movie_model_ratings, val_rmse_movie_model)
+  
+```
+
+The RMSE for the Movie Model using the _edxTest_ set is around __0.9434865__. While this is a substantial improvement from the RMSE of __1.059487__ for the Baseline Mean Model, it misses the ultimate target of __0.86490__ and can be further improved.
+
+#### 2.3.3. Movie & User Model
+\
+\
+In this model, we take both movies and users into account when it comes to predicting ratings. In particular, we know and use the fact that not all users give the same ratings.\
+\
+The formula for the Movie & User Model:\
+$$Y_{m, u} = \mu+b_{m}+b_{u}+ \epsilon$$\
+where $\mu$ stands for the average rating for all movies, $b_m$ stands for the average rating for movie m, also called the movie effect, $b_u$ stands for the user effect while $\epsilon$ stands for independent errors sampled from the same distribution centered at zero.
+
+```{r Movie & User Model}
+#This model considers impact of movies and users on ratings
+#Find overall average rating
+avg_rating <- mean(edxTrain$rating)
+
+#Find the Average Effect (or bias) movies have on Ratings
+movie_effects <- edxTrain %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - avg_rating))
+
+#Find the Average Effect (or bias) users have on Ratings
+user_effects <- edxTrain %>%
+  left_join(movie_effects, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - avg_rating - b_m))
+
+#Predict ratings for Movie & User Model using edxTest set
+m_u_model_ratings <- edxTest %>% 
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  mutate(pred_rating = avg_rating + b_m + b_u) %>%
+  .$pred_rating
+
+#Find RMSE for Movie & User Model using edxTest set
+rmse_m_u_model <- rmse(m_u_model_ratings, edxTest$rating)
+
+#Store RMSE for edxTest set in edxTest Results table
+results_edxTest <- bind_rows(results_edxTest, 
+                              data.frame(
+                                Model = "Movie & User Model",
+                                RMSE = rmse_m_u_model)
+                              )
+#Remove duplicates from edxTest Results table in case code is run more than once
+results_edxTest <- results_edxTest[!duplicated(results_edxTest[, c("Model","RMSE")]),]
+
+#Predict ratings for Movie & User Model using Validation set
+val_m_u_model_ratings <- validation %>% 
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  mutate(pred_rating = avg_rating + b_m + b_u) %>%
+  .$pred_rating
+
+#Find RMSE for Movie & User Model using Validation set
+val_rmse_m_u_model <- rmse(val_m_u_model_ratings, validation$rating)
+
+#Store RMSE for Validation set in Validation Results table
+results_validation <- bind_rows(results_validation , 
+                              data.frame(
+                                Model = "Movie & User Model",
+                                RMSE = val_rmse_m_u_model)
+                              )
+#Remove duplicates from Validation Results table in case code is run more than once
+results_validation <- results_validation[!duplicated(results_validation[, c("Model","RMSE")]),]
+
+#Remove stored data or values to free up space
+rm(avg_rating, movie_effects, user_effects, m_u_model_ratings, rmse_m_u_model, val_m_u_model_ratings, val_rmse_m_u_model)
+  
+```
+
+The RMSE for the Movie & User Model using the _edxTest_ set is around __0.8655475__. While this is a great improvement from the RMSE of __1.059487__ for the Baseline Mean Model and the RMSE of __0.9434865__ for the Movie Model, it misses the ultimate target of __0.86490__ and can be further improved.
+
+#### 2.3.4. Movie & User & Year Model
+\
+\
+While the ratings are greatly influenced by users and movies, there seems to be some variation in ratings by the year of release. In Figure 3 in Section ```2.2.```, we can see that people gave higher ratings to movies released between around 1930 and 1985 than the ones released from 1985 onward.\
+\
+The formula for the Movie & User & Year Model:\  
+$$Y_{m, u, y} = \mu+b_{m}+b_{u}+b_{y}+ \epsilon$$\
+where $\mu$ stands for the average rating for all movies, $b_m$ stands for the average rating for movie m, also called the movie effect,
+$b_u$ stands for the user effect, $b_y$ stands for the effect of the year of release while $\epsilon$ stands for independent errors sampled from the same distribution centered at zero.
+```{r Movie & User & Year Model}
+#This model considers impact of movies, users & years of release on ratings
+#Find overall average rating
+avg_rating <- mean(edxTrain$rating)
+
+#Find the Average Effect (or bias) movies have on Ratings
+movie_effects <- edxTrain %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - avg_rating))
+
+#Find the Average Effect (or bias) users have on Ratings
+user_effects <- edxTrain %>%
+  left_join(movie_effects, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - avg_rating - b_m))
+
+#Find the Average Effect (or bias) years of release have on Ratings
+year_effects <- edxTrain %>%
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  group_by(release_year) %>%
+  summarize(b_y = mean(rating - avg_rating - b_m - b_u))
+
+#Predict ratings for Movie & User & Year Model using edxTest set
+m_u_y_model_ratings <- edxTest %>% 
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  left_join(year_effects, by = "release_year") %>%
+  mutate(pred_rating = avg_rating + b_m + b_u + b_y) %>%
+  .$pred_rating
+
+#Find RMSE for Movie & User & Year Model using edxTest set
+rmse_m_u_y_model <- rmse(m_u_y_model_ratings, edxTest$rating)
+
+#Store RMSE for edxTest set in edxTest Results table
+results_edxTest <- bind_rows(results_edxTest, 
+                              data.frame(
+                                Model = "Movie & User & Year Model",
+                                RMSE = rmse_m_u_y_model)
+                              )
+#Remove duplicates from edxTest Results table in case code is run more than once
+results_edxTest <- results_edxTest[!duplicated(results_edxTest[, c("Model","RMSE")]),]
+
+#Predict ratings for Movie & User & Year Model using Validation set
+val_m_u_y_model_ratings <- validation %>% 
+  mutate(release_year = as.numeric(str_sub(validation$title, start = -5, end = -2))) %>%
+  mutate(rating_year = year(as_datetime(validation$timestamp))) %>%
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  left_join(year_effects, by = "release_year") %>%
+  mutate(pred_rating = avg_rating + b_m + b_u + b_y) %>%
+  .$pred_rating
+
+#Find RMSE for Movie & User & Year Model using Validation set
+val_rmse_m_u_y_model <- rmse(val_m_u_y_model_ratings, validation$rating)
+
+#Store RMSE for Validation set in Validation Results table
+results_validation <- bind_rows(results_validation , 
+                              data.frame(
+                                Model = "Movie & User & Year Model",
+                                RMSE = val_rmse_m_u_y_model)
+                              )
+#Remove duplicates from Validation Results table in case code is run more than once
+results_validation <- results_validation[!duplicated(results_validation[, c("Model","RMSE")]),]
+
+#Remove stored data or values to free up space
+rm(avg_rating, movie_effects, user_effects, year_effects, m_u_y_model_ratings, rmse_m_u_y_model, val_m_u_y_model_ratings, val_rmse_m_u_y_model)
+
+  
+```
+
+The RMSE for the Movie & User & Year Model using the _edxTest_ set is around __0.8651656__. Although this comes closer to the ultimate target of __0.86490__ than the RMSE of __0.8655475__ for the Movie & User Model, it can still be improved.
+
+#### 2.3.5. Movie & User & Year & Timestamp Model
+\
+While the ratings are greatly influenced by users and movies, there seems to be some variation in ratings by the year of rating (i.e. year of Timestamp). In Figure 4 in Section ```2.2.```, we can see some variation in ratings by the year of rating by a user.\
+\
+The formula for the Movie & User & Year & Timestamp Model:\
+$$Y_{m, u, y, t} = \mu+b_{m}+b_{u}+b_{y}+b_{t}+ \epsilon$$\
+where $\mu$ stands for the average rating for all movies, $b_m$ stands for the average rating for movie m, also called the movie effect, $b_u$ stands for the user effect, $b_y$ stands for the effect of the year of release, $b_t$ stands for the effect of the year of rating (i.e. timestamp effect) while $\epsilon$ stands for independent errors sampled from the same distribution centered at zero.
+```{r Movie & User & Year & Timestamp Model}
+#This model considers impact of movies, users, years of release & years of ratings on ratings
+#Find overall average rating
+avg_rating <- mean(edxTrain$rating)
+
+#Find the Average Effect (or bias) movies have on Ratings
+movie_effects <- edxTrain %>%
+  group_by(movieId) %>%
+  summarize(b_m = mean(rating - avg_rating))
+
+#Find the Average Effect (or bias) users have on Ratings
+user_effects <- edxTrain %>%
+  left_join(movie_effects, by = "movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = mean(rating - avg_rating - b_m))
+
+#Find the Average Effect (or bias) years of release have on Ratings
+year_effects <- edxTrain %>%
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  group_by(release_year) %>%
+  summarize(b_y = mean(rating - avg_rating - b_m - b_u))
+
+#Find the Average Effect (or bias) years of rating have on Ratings
+timestamp_effects <- edxTrain %>%
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  left_join(year_effects, by = "release_year") %>%
+  group_by(rating_year) %>%
+  summarize(b_t = mean(rating - avg_rating - b_m - b_u - b_y))
+
+#Predict ratings for Movie & User & Year & Timestamp Model using edxTest set
+m_u_y_t_model_ratings <- edxTest %>% 
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  left_join(year_effects, by = "release_year") %>%
+  left_join(timestamp_effects, by = "rating_year") %>%
+  mutate(pred_rating = avg_rating + b_m + b_u + b_y + b_t) %>%
+  .$pred_rating
+
+#Find RMSE for Movie & User & Year & Timestamp Model using edxTest set
+rmse_m_u_y_t_model <- rmse(m_u_y_t_model_ratings, edxTest$rating)
+
+#Store RMSE for edxTest set in edxTest Results table
+results_edxTest <- bind_rows(results_edxTest, 
+                              data.frame(
+                                Model = "Movie & User & Year & Timestamp Model",
+                                RMSE = rmse_m_u_y_t_model)
+                              )
+#Remove duplicates from edxTest Results table in case code is run more than once
+results_edxTest <- results_edxTest[!duplicated(results_edxTest[, c("Model","RMSE")]),]
+
+#Predict ratings for Movie & User & Year & Timestamp Model using Validation set
+val_m_u_y_t_model_ratings <- validation %>% 
+  mutate(release_year = as.numeric(str_sub(validation$title, start = -5, end = -2))) %>%
+  mutate(rating_year = year(as_datetime(validation$timestamp))) %>%
+  left_join(movie_effects, by = "movieId") %>%
+  left_join(user_effects, by = "userId") %>%
+  left_join(year_effects, by = "release_year") %>%
+  left_join(timestamp_effects, by = "rating_year") %>%
+  mutate(pred_rating = avg_rating + b_m + b_u + b_y + b_t) %>%
+  .$pred_rating
+
+#Find RMSE for Movie & User & Year & Timestamp Model using Validation set
+val_rmse_m_u_y_t_model <- rmse(val_m_u_y_t_model_ratings, validation$rating)
+
+#Store RMSE for Validation set in Validation Results table
+results_validation <- bind_rows(results_validation , 
+                              data.frame(
+                                Model = "Movie & User & Year & Timestamp Model",
+                                RMSE = val_rmse_m_u_y_t_model)
+                              )
+#Remove duplicates from Validation Results table in case code is run more than once
+results_validation <- results_validation[!duplicated(results_validation[, c("Model","RMSE")]),]
+
+#Remove stored data or values to free up space
+rm(avg_rating, movie_effects, user_effects, year_effects, timestamp_effects, m_u_y_t_model_ratings, rmse_m_u_y_t_model, val_m_u_y_t_model_ratings, val_rmse_m_u_y_t_model)
+  
+```
+
+The RMSE for the Movie & User & Year & Timestamp Model using the _edxTest_ set is around __0.8650907__. Although this comes closer to the ultimate target of __0.86490__ than the RMSE of __0.8651656__ for the Movie & User & Year Model, it can still be improved.
+
+#### 2.3.6. Regularized Movie & User & Release Year & Timestamp Model\
+While the last model is a good improvement, we can improve the results further.\ In Tables 4 and 5, we see that some movies are rated more frequently than others. Likewise, some users rate more frequently than others while some years of release and years of rating have more movie ratings than others. In this case, a smaller frequency of rating can introduce bias into the model. For example, a movie might be rated 5.0 but have only one rating. In this case, our prediction of a 5.0 rating introduces a bias into our model.\
+To that end, we can modify the RMSE to penalize large estimates coming from small samples.\
+\
+The formula for the RMSE with regularization:
+
+$$\frac{1}{N} \sum_{m, u, y, t} (y_{m, u, y, t} - \mu - b_m - b_u - b_y - b_t)^2 + \lambda(\sum_{m}b_m^2 + \sum_{u}b_u^2 + \sum_{y}b_y^2 + \sum_{t}b_t^2)$$\
+The term on the left hand side of the plus sign is the mean squared error and the term on the right hand side is a penalty term for larger $b$'s. So, we have to pick b's to minimize this equation.\
+\
+Multiple values of lambda can be tried to find the best solution. To tune lambda this way, only the _edxTest_ set will be used since the _validation_ set is reserved only for the final evaluation of the model.
+```{r Regularized Movie & User & Release Year & Timestamp Model}
+#This model considers impact of movies, users, years of release & years of ratings on ratings
+#This also introduces regularization to penalize bigger estimates from smaller samples 
+
+#Define lambda values to tune the algorithm
+#This sequence of lambdas is computationally expensive
+#So, this might not work on all computers
+#Pick this sequence as it balances computationally expensiveness & variety of tuning parameter
+lambdas <- seq(0, 20, 1)
+
+#Define function to find RMSE for given lambda and given test sets
+regularized_rmse <- function(lambda, test_set = edxTest){
+  
+  #Find overall average rating
+  avg_rating <- mean(edxTrain$rating)
+  
+  #Find the Average Effect (or bias) movies have on Ratings
+  #Regularize this effect
+  movie_effects <- edxTrain %>%
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating -
+                    avg_rating)/(lambda+n()))
+  
+  #Find the Average Effect (or bias) users have on Ratings
+  #Regularize this effect
+  user_effects <- edxTrain %>%
+    left_join(movie_effects, by = "movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - avg_rating - b_m)/(lambda + n()))
+  
+  #Find the Average Effect (or bias) years of release have on Ratings
+  #Regularize this effect
+  year_effects <- edxTrain %>%
+    left_join(movie_effects, by = "movieId") %>%
+    left_join(user_effects, by = "userId") %>%
+    group_by(release_year) %>%
+    summarize(b_y = sum(rating - avg_rating - b_m - b_u)/(lambda + n()))
+  
+  #Find the Average Effect (or bias) years of ratings have on Ratings
+  #Regularize this effect
+  timestamp_effects <- edxTrain %>%
+    left_join(movie_effects, by = "movieId") %>%
+    left_join(user_effects, by = "userId") %>%
+    left_join(year_effects, by = "release_year") %>%
+    group_by(rating_year) %>%
+    summarize(b_t = sum(rating - avg_rating - b_m - b_u - b_y)/(lambda + n()))
+  
+  #Predict ratings for this Model using a given test set
+  m_u_y_t_model_ratings <- test_set %>% 
+    mutate(release_year = as.numeric(str_sub(test_set$title, start = -5, end = -2))) %>%
+    mutate(rating_year = year(as_datetime(test_set$timestamp))) %>%
+    left_join(movie_effects, by = "movieId") %>%
+    left_join(user_effects, by = "userId") %>%
+    left_join(year_effects, by = "release_year") %>%
+    left_join(timestamp_effects, by = "rating_year") %>%
+    mutate(pred_rating = avg_rating + b_m + b_u + b_y + b_t) %>%
+    pull(pred_rating)
+  
+  #Find RMSE for this Model using a given test set
+  rmse_m_u_y_t_model <- rmse(m_u_y_t_model_ratings, test_set$rating)
+  rmse_m_u_y_t_model
+}
+#Calculate RMSEs using edxTest for each lambda
+rmses <- sapply(lambdas, regularized_rmse, test_set = edxTest)
+#Choose the lambda that minimizes RMSE
+best_lambda <- lambdas[which.min(rmses)]
+#Pick the minimum RMSE
+rmse_min <- min(rmses)
+
+#Store RMSE for edxTest set in edxTest Results table
+results_edxTest <- bind_rows(results_edxTest, 
+                              data.frame(
+                                Model = "Regularized Movie & User & Year & Timestamp Model",
+                                RMSE = rmse_min)
+                              )
+#Remove duplicates from edxTest Results table in case code is run more than once
+results_edxTest <- results_edxTest[!duplicated(results_edxTest[, c("Model","RMSE")]),]
+
+  
+```
+
+While more lambda values offer greater tuning for the regularization, more lambda values result in more computationally expensive processes. Therefore, the sequence of numbers from 0 to 20 in increments of 1 is chosen as the lambda values to strike a balance between better tuning and computational expense.\
+The RMSE values obtained for these lambda values are given in Figure 5 below.
+```{r Plot - RMSEs by Lambdas, message=FALSE}
+#Create RMSEs by Lambdas plot using ggplot2
+#Check if there are lambdas and RMSEs
+if(exists("lambdas") && exists("rmses")){
+  data.frame(lambdas=lambdas, rmses=rmses) %>%
+    ggplot(aes(lambdas, rmses)) +
+    geom_point(color="#FA8072") +
+    labs(title = "Figure 5: RMSEs by Lambdas \n", 
+         subtitle="Regularized Movie & User & Year & Timestamp Model",
+         x = "\nLambdas",
+         y = "RMSEs\n") +
+    theme_economist()
+}
+  
+```
+
+As seen in the ```RMSEs by Lambdas``` graph above, the smallest RMSEs occurs when lambda is equal to 5. Using 5 as the lambda and the _edxTest_ set, the RMSE for the Regularized Movie & User & Year & Timestamp Model is around __0.8645478__ beating the ultimate target of __0.86490__. 
+
+## 3. Results
+
+Now, the _validation_ set can be used to evaluate the Regularized Movie & User & Year & Timestamp Model, the final model. The best lambda that results in the minimum RMSE for the model was obtained using the model on the _edxTest_ set in Section ```2.3.6.``` and will be used for the evaluation purpose of the _validation_ set.
+
+```{r RMSE for Regularized Model using Validation set}
+#Find RMSE for Regularized Model using Validation set & previously tuned lambda
+#Check if the lambda exist
+if(exists("best_lambda")){
+  #Find RMSE for this Final Model using Validation set
+  val_rmse_min <- regularized_rmse(best_lambda, validation)
+  
+  #Store RMSE for Validation set in Validation Results table
+  results_validation <- bind_rows(results_validation,
+                                  data.frame(
+                                    Model = "Regularized Movie & User & Year & Timestamp Model",
+                                    RMSE = val_rmse_min)
+                                  )
+  #Remove duplicates from Validation Results table in case code is run more than once
+  results_validation <- results_validation[!duplicated(results_validation[, c("Model","RMSE")]),]
+  
+}
+```
+
+The Regularized Movie & User & Year & Timestamp Model has a RMSE of __0.8648589__ which beats the ultimate target of __0.86490__.\
+For reference, the RMSE of all models using the _validation_ set can be found below:
+
+```{r Table 8: Validation Results Table for All models}
+#Show Validation Results Table for All models
+results_validation %>% 
+  kable(caption = "RMSEs of All Models Using Validation Set", align="c") %>% 
+  column_spec(column = 1: ncol(results_validation), border_left = TRUE, border_right = TRUE) %>%
+  kable_styling(full_width=FALSE,
+                font_size = 13,
+                latex_options = c("HOLD_position","striped"),
+                position = "center")
+```
+
+As seen in Table 8 above, the ultimate model was built by incorporating new features in every step of the model building process.\
+
+The model performance ultimately improved from an RMSE of __1.0612018__ (i.e. Baseline Mean Model) to the final RMSE of __0.8648589__. 
+
+## 4. Conclusion
+
+In this project, the MovieLens 10M dataset was sucessfully used to build a recommendation system model.\
+
+This report introduced the MovieLens dataset, explored its properties, introduced newly developed features from existing ones and visualized the data.\
+
+Then, a model was built bit by bit from the rudimentary approach of assigning the overall movie average to all movies to a regularized model that incorporated movies, users, years of release for the movies and the years of ratings by users that decreased the error between a predicted rating and an actual rating.\
+
+The model improved the most when the model incorporated movieId and userId. Adding the year of release (i.e. Year component of the models) and the year of rating (i.e. Timestamp component of the models) led to a slight improvement. Regularization also helped in this regard as it penalized big estimates of effects from small sample sizes.\
+
+All in all, the final model achieved the goal of reaching an RMSE below __0.86490__.
+
+Some limitations of this project is that it did not employ methods such as matrix factorization or artificial neural networks. Such methods can be used to discern relationships among data that are not readily recognizable. Therefore, any future work can further improve on this report by employing such methods.
+```{r Remove stored data or values}
+##Remove stored data or values if they exist
+if(exists("lambdas")) rm(lambdas)
+if(exists("rmses")) rm(rmses)
+if(exists("best_lambda")) rm(best_lambda)
+if(exists("rmse_min")) rm(rmse_min)
+if(exists("val_rmse_min")) rm(val_rmse_min)
+if(exists("edx_columns")) rm(edx_columns)
+if(exists("n_ratings")) rm(n_ratings)
+if(exists("n_users")) rm(n_users)
+if(exists("n_movies")) rm(n_movies)
+
+```
+
+
